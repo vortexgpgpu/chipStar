@@ -297,8 +297,18 @@ public:
   InstWord getFunctionRetType() const { return getWord(1); }
 
   bool isType() const {
-    return ((InstWord)Opcode_ >= (InstWord)spv::Op::OpTypeVoid) &&
-           ((InstWord)Opcode_ <= (InstWord)spv::Op::OpTypeForwardPointer);
+    // The OpType* opcodes 19..39 (OpTypeVoid..OpTypeForwardPointer).
+    if (((InstWord)Opcode_ >= (InstWord)spv::Op::OpTypeVoid) &&
+        ((InstWord)Opcode_ <= (InstWord)spv::Op::OpTypeForwardPointer))
+      return true;
+    // SPV_KHR_untyped_pointers: OpTypeUntypedPointerKHR is opcode 4417,
+    // outside the contiguous OpType* range. SPIRV-LLVM-Translator (LLVM
+    // 20) emits this by default when compiling HIP-via-chipStar kernels
+    // against opaque pointers. decodeType() below already has a handler
+    // for it, but it was unreachable without this gate.
+    if ((InstWord)Opcode_ == 4417 /* SpvOpTypeUntypedPointerKHR */)
+      return true;
+    return false;
   }
   InstWord getTypeID() const {
     assert(isType());
