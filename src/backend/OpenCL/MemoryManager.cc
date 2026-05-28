@@ -61,7 +61,25 @@ void MemoryManager::init(CHIPContextOpenCL *ChipCtxCl_) {
   std::string DevExts = Device_.getInfo<CL_DEVICE_EXTENSIONS>();
   cl_device_svm_capabilities SVMCapabilities =
       Device_.getInfo<CL_DEVICE_SVM_CAPABILITIES>();
+  cl_uint DevAddressBits = Device_.getInfo<CL_DEVICE_ADDRESS_BITS>();
   auto ChosenStrategy = AS::Unset;
+
+  // SVM (and Intel USM) require that the host and the device share a
+  // virtual address space, i.e. share an address width. When the device
+  // pointer width is narrower than the host's, any address returned by
+  // the host-side OpenCL runtime cannot be safely truncated to a device
+  // pointer at kernel-arg passing time. Refuse SVM in that case; force
+  // BufferDevAddr (cl_ext_buffer_device_address), which exchanges 32-bit
+  // device addresses explicitly.
+  const bool NarrowDevice = DevAddressBits != sizeof(void *) * 8;
+  if (NarrowDevice) {
+    logDebug("Device pointer width ({}) differs from host ({}); SVM and "
+             "Intel USM disabled, requiring BufferDevAddr.",
+             DevAddressBits, (unsigned)(sizeof(void *) * 8));
+    AllowedAllocStrats.erase(AS::IntelUSM);
+    AllowedAllocStrats.erase(AS::FineGrainSVM);
+    AllowedAllocStrats.erase(AS::CoarseGrainSVM);
+  }
 
   // Select an available strategy in this order.
   if (AllowedAllocStrats.count(AS::IntelUSM) &&
@@ -84,9 +102,15 @@ void MemoryManager::init(CHIPContextOpenCL *ChipCtxCl_) {
     ChosenStrategy = AS::BufferDevAddr;
   }
 
-  if (ChosenStrategy == AS::Unset)
+  if (ChosenStrategy == AS::Unset) {
+    if (NarrowDevice)
+      CHIPERR_LOG_AND_THROW(
+          "Device pointer width is narrower than host's, but device does "
+          "not support cl_ext_buffer_device_address. Cannot allocate.",
+          hipErrorInitializationError);
     CHIPERR_LOG_AND_THROW("Insufficient memory capabilities.",
                           hipErrorInitializationError);
+  }
   AllocStrategy_ = ChosenStrategy;
 
   const cl::Platform &Plat = ChipCtxCl_->getPlatform();

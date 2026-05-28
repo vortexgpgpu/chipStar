@@ -946,33 +946,48 @@ static void appendRuntimeObjects(cl::Context Ctx, CHIPDeviceOpenCL &ChipDev,
 
   // TODO: Reuse already compiled modules.
 
-  auto AppendSource = [&](auto &Source, const std::string &Name) -> void {
+  // Phase 3 of chipstar_opencl_32bit proposal: rtdevlib modules may have
+  // a per-width variant (`<source>_w32` / `<source>_w64`). Use the
+  // CHIPSTAR_RTDEVLIB_PICK macro from rtdevlib-modules.h to select the
+  // right variant for this device's address width. Single-width builds
+  // collapse to the un-suffixed array name (Level0-compatible).
+  const cl_uint AddrBits = ChipDev.get()->getInfo<CL_DEVICE_ADDRESS_BITS>();
+
+  auto AppendSource = [&](std::pair<const unsigned char *, size_t> View,
+                          const std::string &Name) -> void {
     if (ChipEnvVars.getDumpSpirv()) {
-      auto Str = std::string_view(reinterpret_cast<const char *>(Source.data()),
-                                  Source.size());
+      auto Str = std::string_view(reinterpret_cast<const char *>(View.first),
+                                  View.second);
       if (auto DumpPath = dumpSpirv(Str, Name))
         logDebug("Dumped runtime object '{}' SPIR-V binary to '{}'", Name,
                  fs::absolute(*DumpPath).c_str());
     }
-    Objects.push_back(compileIL(Ctx, ChipDev, Source));
+    Objects.push_back(compileIL(Ctx, ChipDev, View.first, View.second));
   };
 
   if (ChipDev.hasFP32AtomicAdd())
-    AppendSource(chipstar::atomicAddFloat_native, "atomicAddFloat_native");
+    AppendSource(CHIPSTAR_RTDEVLIB_PICK(atomicAddFloat_native, AddrBits),
+                 "atomicAddFloat_native");
   else
-    AppendSource(chipstar::atomicAddFloat_emulation, "atomicAddFloat_emulation");
+    AppendSource(CHIPSTAR_RTDEVLIB_PICK(atomicAddFloat_emulation, AddrBits),
+                 "atomicAddFloat_emulation");
 
   if (ChipDev.hasDoubles()) {
     if (ChipDev.hasFP64AtomicAdd())
-      AppendSource(chipstar::atomicAddDouble_native, "atomicAddDouble_native");
+      AppendSource(CHIPSTAR_RTDEVLIB_PICK(atomicAddDouble_native, AddrBits),
+                   "atomicAddDouble_native");
     else
-      AppendSource(chipstar::atomicAddDouble_emulation, "atomicAddDouble_emulation");
+      AppendSource(CHIPSTAR_RTDEVLIB_PICK(atomicAddDouble_emulation, AddrBits),
+                   "atomicAddDouble_emulation");
   }
 
-  AppendSource(chipstar::atomicMinMaxFloat_emulation, "atomicMinMaxFloat_emulation");
+  AppendSource(
+      CHIPSTAR_RTDEVLIB_PICK(atomicMinMaxFloat_emulation, AddrBits),
+      "atomicMinMaxFloat_emulation");
 
   if (ChipDev.hasBallot())
-    AppendSource(chipstar::ballot_native, "ballot_native");
+    AppendSource(CHIPSTAR_RTDEVLIB_PICK(ballot_native, AddrBits),
+                 "ballot_native");
 
   // No fall-back implementation for ballot - let linker raise an error.
 }
@@ -2419,7 +2434,12 @@ void CHIPExecItemOpenCL::setupAllArgs() {
       break;
     }
     case SPVTypeKind::Pointer: {
-      CHIPASSERT(Arg.Size == sizeof(void *));
+      // Arg.Size comes from the SPIR-V parser and reflects the *device*
+      // pointer width (4 on Physical32, 8 on Physical64). sizeof(void *)
+      // is the *host* width. The two coincide on a 64-bit host with a
+      // 64-bit device but the only structural invariant is that the
+      // device width fits in the host marshalling slot.
+      CHIPASSERT(Arg.Size <= sizeof(void *));
 
       if (Arg.isWorkgroupPtr()) {
         logTrace("setLocalMemSize to {}\n", SharedMem_);

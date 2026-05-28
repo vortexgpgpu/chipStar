@@ -27,7 +27,11 @@
 #include <hip/devicelib/macros.hh>
 
 // See bitcode/README-devicelib.md for the purpose of "obfuscated pointers".
-typedef unsigned long __chip_obfuscated_ptr_t;
+// Phase 3 of chipstar_opencl_32bit proposal: the obfuscated pointer must
+// be the same width as the device pointer (so it survives a round-trip
+// reinterpret_cast). On spirv64 this is 8 bytes; on spirv32 it is 4.
+// __UINTPTR_TYPE__ is the compiler's pointer-width unsigned integer.
+typedef __UINTPTR_TYPE__ __chip_obfuscated_ptr_t;
 inline __device__ __chip_obfuscated_ptr_t __chip_obfuscate_ptr(void *ptr) {
   static_assert(sizeof(__chip_obfuscated_ptr_t) == sizeof(void *), "");
   return reinterpret_cast<__chip_obfuscated_ptr_t>(ptr);

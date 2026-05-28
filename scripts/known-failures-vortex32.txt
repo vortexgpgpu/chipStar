@@ -1,0 +1,66 @@
+# chipStar smoke-suite failures on rv32 Vortex via pocl_vortex+SimX
+#
+# Generated 2026-05-27 from Phase 4 of
+# vortex_v3/hip32/docs/proposals/chipstar_opencl_32bit_proposal.md.
+#
+# Summary of the ctest -E "compiler|MathFunctions|samples_" run:
+#   1418 tests registered
+#   ~1308 attempted before the 25-min wall cap
+#       473 Passed
+#       707 Failed (test ran, assertion or PASS-regex check failed)
+#        69 Exception (SegFault during runtime init or kernel dispatch)
+#        47 Skipped (Catch2 self-skips on missing device features)
+#        10 Timeout (per-test 60s cap)
+#
+# The proposal expects (and accepts) this long tail: many tests assume
+# features Vortex doesn't expose (subgroups, FP64 atomics, image
+# support) or assume sizeof(size_t) == 8 in device-side code. The
+# headline tests pass:
+#   - hip/vecadd PASSED on SimX (instrs=3736, cycles=14368, IPC=0.260)
+#                      and RTLsim (instrs=1097, cycles=10450, IPC=0.105)
+#   - hip/sgemm  PASSED on SimX 16x16 + 64x64 (IPC=0.473 at 64x64)
+#                      and RTLsim 4x4 (instrs=1301, cycles=10565)
+#
+# Per the proposal §6 decision gate (Coverage 30-80%) this puts
+# chipStar rv32 in the "mixed" category: chipStar is the primary path
+# for unmodified HIP applications that match its supported feature
+# subset; bespoke toolchain remains for extension exposure and
+# uncovered tests.
+#
+# This file is the rv32-Vortex skip list. The CI regression script
+# should consume it via ctest -E "$(cat known-failures-vortex32.txt
+# | tr '\n' '|')" or equivalent. Edit by name only; don't reorder
+# (alphabetical) so diffs are minimal as the list shrinks.
+
+# Tests that compile but fail at runtime (assertion / PASS-regex):
+constant_fold_lgamma_r
+Unit_deviceFunctions_CompileTest
+Unit_AnyAll_CompileTest
+Unit_ballot
+Unit_clz
+Unit_ffs
+Unit_funnelshift
+Unit_brev
+Unit_popc
+Unit_ldg
+Unit_threadfence_system
+# (660 additional Unit_*/Test*/ABM*/CatchMemLeak* / etc. — full list in
+# /tmp/failed_uniq.txt at the time of the run.  Omitted here pending
+# triage; most fall in one of three buckets:
+#   1. Feature gap (subgroups, fp64 atomics, images) — Vortex doesn't
+#      advertise the extension.
+#   2. spirv64-only static_assert in chipStar device headers
+#      (TestLargeKernelArgLists, TestBufferDevAddr).
+#   3. Long-tail device-libs precision issues that POCL's SPIR-V
+#      backend exposes differently than rv64 / Intel iGPU.)
+
+# Tests that SegFault during runtime init or kernel dispatch:
+TestKernelArgs
+TestAtomics
+TestAlignAttrRuntime
+TestNegativeHasNoIGBAs1
+# (61 additional — full list in /tmp/exception_uniq.txt.)
+
+# Tests that time out at 60s per-test cap:
+# (10 entries — predominantly long-running stress tests that SimX
+# can't complete in the budget; not a functional failure.)

@@ -40,7 +40,11 @@ typedef unsigned long ulong;
 #else
 #ifndef HIP_SIZE_T_DEFINED
 #define HIP_SIZE_T_DEFINED
-typedef unsigned long size_t;
+// Phase 3 of chipstar_opencl_32bit proposal: size_t must follow the
+// device's pointer width. On spirv64 this is unsigned long; on spirv32
+// it is unsigned int. Use the compiler's built-in __SIZE_TYPE__ so the
+// device-side size_t matches the target triple.
+typedef __SIZE_TYPE__ size_t;
 #endif
 #endif
 

@@ -227,9 +227,13 @@ std::string_view extractSPIRVModule(const void *Bundle, std::string &ErrorMsg) {
     // std::cout << "  Size: " << Size << std::endl;
 
     // SPIR-V bundle entry ID for HIP-Clang 14+. Additional components
-    // are ignored for now.
-    std::string_view SPIRVBundleID = "hip-spirv64";
-    if (EntryID.substr(0, SPIRVBundleID.size()) == SPIRVBundleID ||
+    // are ignored for now. Phase 3 of chipstar_opencl_32bit proposal:
+    // accept both `hip-spirv64` and `hip-spirv32` so chipStar can load
+    // device blobs produced by hipcc --offload-pointer-width=32.
+    std::string_view SPIRV64BundleID = "hip-spirv64";
+    std::string_view SPIRV32BundleID = "hip-spirv32";
+    if (EntryID.substr(0, SPIRV64BundleID.size()) == SPIRV64BundleID ||
+        EntryID.substr(0, SPIRV32BundleID.size()) == SPIRV32BundleID ||
         // Legacy entry ID used during early development.
         EntryID == "hip-spir64-unknown-unknown") {
       // std::cout << "Found SPIR-V bundle" << std::endl;

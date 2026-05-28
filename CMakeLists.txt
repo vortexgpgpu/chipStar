@@ -89,6 +89,41 @@ foreach(dir ${REQUIRED_DIRECTORIES})
     endif()
 endforeach()
 
+# Apply chipStar-Vortex local patches to CHIP-SPV upstream submodules
+# (HIPCC, ROCm-Device-Libs). Submodule URLs in .gitmodules remain
+# pinned at CHIP-SPV so submodule pointer bumps stay clean; the
+# Vortex deltas ride as patch files until they land upstream.
+# See HIPCC-patches/README.md, ROCm-Device-Libs-patches/README.md.
+function(apply_submodule_patches SUBMODULE_DIR PATCH_DIR)
+    file(GLOB _patches "${PATCH_DIR}/[0-9]*.patch")
+    list(SORT _patches)
+    foreach(_patch ${_patches})
+        # Idempotent: if --reverse --check succeeds, the patch is already
+        # applied; skip. Otherwise forward-apply.
+        execute_process(
+            COMMAND git apply --reverse --check "${_patch}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/${SUBMODULE_DIR}"
+            RESULT_VARIABLE _already_applied
+            OUTPUT_QUIET ERROR_QUIET)
+        if(NOT _already_applied EQUAL 0)
+            execute_process(
+                COMMAND git apply "${_patch}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/${SUBMODULE_DIR}"
+                RESULT_VARIABLE _apply_status
+                OUTPUT_VARIABLE _apply_out
+                ERROR_VARIABLE _apply_err)
+            if(NOT _apply_status EQUAL 0)
+                message(FATAL_ERROR
+                    "Failed to apply ${_patch} in ${SUBMODULE_DIR}:\n${_apply_err}")
+            endif()
+            message(STATUS "Applied ${_patch} to ${SUBMODULE_DIR}")
+        endif()
+    endforeach()
+endfunction()
+
+apply_submodule_patches(HIPCC                    "${CMAKE_SOURCE_DIR}/HIPCC-patches")
+apply_submodule_patches(bitcode/ROCm-Device-Libs "${CMAKE_SOURCE_DIR}/ROCm-Device-Libs-patches")
+
 # =============================================================================
 # chipStar CMAKE DEPENDENCIES
 if(NOT DEFINED OpenCL_LIBRARY)
@@ -424,14 +459,50 @@ endif()
 
 message(STATUS "chipStar will be installed to: ${CMAKE_INSTALL_PREFIX}")
 
-if(LLVM_VERSION_MAJOR GREATER_EQUAL 23)
-  # On LLVM-23+ the emitted SPIR-V version can be controlled with
-  # subarch string (v#.#). The new "chipstar" OS component sets
-  # allowed SPIR-V extensions tailored for chipStar.
-  set(OFFLOAD_TRIPLE spirv64v1.2-unknown-chipstar)
-else()
-  set(OFFLOAD_TRIPLE spirv64)
-endif()
+# Pointer-width selection for the HIPSPV device toolchain.
+#
+# CHIP_TARGET_POINTER_WIDTHS is a semicolon-separated list of enabled
+# target pointer widths (allowed: 32, 64). Defaults to 64 -- the
+# pre-existing behaviour. Setting "32;64" produces both
+# hipspv-spirv32.bc and hipspv-spirv64.bc device libraries; setting
+# "32" alone produces only the 32-bit variant.
+#
+# The first width in the list is the *primary* width; legacy single-
+# triple consumers (hipcc invocation flags, RDC supplement, etc.) use
+# the primary triple. Phase 2 of the chipstar_opencl_32bit proposal
+# keeps these consumers single-triple; Phase 3 teaches hipcc to pick
+# the per-invocation width.
+set(CHIP_TARGET_POINTER_WIDTHS "64" CACHE STRING
+    "Semicolon-separated list of pointer widths to build (32, 64).")
+
+function(chip_offload_triple_for_width WIDTH OUT_VAR)
+  if(LLVM_VERSION_MAJOR GREATER_EQUAL 23)
+    # On LLVM-23+ the emitted SPIR-V version can be controlled with
+    # subarch string (v#.#). The new "chipstar" OS component sets
+    # allowed SPIR-V extensions tailored for chipStar.
+    set(${OUT_VAR} "spirv${WIDTH}v1.2-unknown-chipstar" PARENT_SCOPE)
+  else()
+    set(${OUT_VAR} "spirv${WIDTH}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+set(OFFLOAD_TRIPLES "")
+foreach(_w IN LISTS CHIP_TARGET_POINTER_WIDTHS)
+  if(NOT _w MATCHES "^(32|64)$")
+    message(FATAL_ERROR
+      "CHIP_TARGET_POINTER_WIDTHS contains invalid width '${_w}'. "
+      "Allowed: 32, 64.")
+  endif()
+  chip_offload_triple_for_width(${_w} _triple_for_w)
+  list(APPEND OFFLOAD_TRIPLES "${_triple_for_w}")
+endforeach()
+unset(_w)
+unset(_triple_for_w)
+
+list(GET OFFLOAD_TRIPLES 0 OFFLOAD_TRIPLE)
+message(STATUS "chipStar target pointer widths: ${CHIP_TARGET_POINTER_WIDTHS}")
+message(STATUS "chipStar offload triples: ${OFFLOAD_TRIPLES}")
+message(STATUS "chipStar primary offload triple: ${OFFLOAD_TRIPLE}")
 
 # =============================================================================
 # chipStar BINARIES & TESTS

@@ -1,0 +1,91 @@
+From e59e5078acef95ac616dc7d1b33a00cc6550ad48 Mon Sep 17 00:00:00 2001
+From: tinebp <tinebp@yahoo.com>
+Date: Wed, 27 May 2026 23:42:52 -0700
+Subject: [PATCH] hipcc: accept --offload=spirv32 +
+ --offload-pointer-width={32,64}
+
+Phase 3 of chipstar_opencl_32bit_proposal.md: chipStar's hipcc now
+accepts both spirv32 and spirv64 offload triples, plus a new
+--offload-pointer-width=N convenience flag that substitutes the
+embedded --offload= triple (preserving any v<spv>-unknown-chipstar
+OS suffix used on LLVM 23+). The substitution is implemented as a
+regex_replace over HIPCXXFLAGS/HIPCFLAGS/HIPLDFLAGS after the
+.hipInfo-derived flags are assembled.
+
+The duplicate-arg filter also learns --offload=spirv32 alongside
+the existing --offload=spirv64 entry.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ src/hipBin_spirv.h | 33 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/src/hipBin_spirv.h b/src/hipBin_spirv.h
+index 1adadf5..cc0c9d1 100644
+--- a/src/hipBin_spirv.h
++++ b/src/hipBin_spirv.h
+@@ -133,6 +133,12 @@ public:
+   bool offload = false;
+   bool linkOnly = false;
+   bool fastMath = false;
++  // Phase 3 of chipstar_opencl_32bit proposal: caller-requested device
++  // pointer width. Empty string means "no override" — the .hipInfo's
++  // embedded --offload= triple (primary OFFLOAD_TRIPLE) is used as-is.
++  // Otherwise this is "32" or "64" and hipcc substitutes spirv32 <-> spirv64
++  // in the resulting --offload= flag before invoking clang.
++  string requestedPointerWidth = "";
+   Argument MT;
+   Argument MF;
+   bool perThreadDefaultStream = false;
+@@ -219,8 +225,17 @@ public:
+         rdc_present = true;
+         remainingArgs.push_back("-fgpu-rdc");
+         remainingArgs.push_back("-c");
+-      } else if (arg == "--offload=spirv64") {
++      } else if (arg == "--offload=spirv64" || arg == "--offload=spirv32") {
+         offload = true;
++      } else if (arg == "--offload-pointer-width=32" ||
++                 arg == "--offload-pointer-width=64") {
++        // Phase 3 of chipstar_opencl_32bit proposal: caller-driven
++        // pointer-width selection. Consume the flag (don't pass to clang),
++        // remember the request, and apply it as a spirv32<->spirv64
++        // substitution after the per-build HIPCXXFLAGS are assembled.
++        requestedPointerWidth = arg.substr(arg.find('=') + 1);
++        offload = true;
++        continue; // don't pass it on
+       } else if (arg == "-fgpu-rdc") {
+         rdc_present = true;
+         remainingArgs.push_back(arg);
+@@ -739,6 +754,7 @@ void HipBinSpirv::printFull() {
+ vector<string> argsFilter(const vector<string> &argsIn) {
+   vector<string> excludedArgs{
+       "--offload=spirv64",
++      "--offload=spirv32",
+       "-D__HIP_PLATFORM_SPIRV__",
+       "-D__HIP_PLATFORM_SPIRV__=",
+       "-D__HIP_PLATFORM_SPIRV__=1",
+@@ -802,6 +818,21 @@ void HipBinSpirv::executeHipCCCmd(vector<string> argv) {
+   HIPCFLAGS = getHipCFlags();
+   HIPCXXFLAGS = getHipCXXFlags();
+   HIPLDFLAGS = getHipLdFlags();
++
++  // Phase 3 of chipstar_opencl_32bit proposal: if the caller asked for a
++  // device pointer width different from chipStar's primary OFFLOAD_TRIPLE
++  // (the one baked into .hipInfo's HIP_OFFLOAD_COMPILE_OPTIONS), rewrite
++  // any --offload=spirv32 / --offload=spirv64 occurrence in the embedded
++  // flags to match. Preserve the optional `v<spv>-unknown-chipstar` OS
++  // suffix used on LLVM 23+.
++  if (!opts.requestedPointerWidth.empty()) {
++    std::regex OffloadTripleRe(R"(--offload=spirv(32|64)([^ ]*))");
++    string Replacement =
++        "--offload=spirv" + opts.requestedPointerWidth + "$2";
++    HIPCXXFLAGS = regex_replace(HIPCXXFLAGS, OffloadTripleRe, Replacement);
++    HIPCFLAGS = regex_replace(HIPCFLAGS, OffloadTripleRe, Replacement);
++    HIPLDFLAGS = regex_replace(HIPLDFLAGS, OffloadTripleRe, Replacement);
++  }
+   // Separate -no-hip-rt from other linker flags since it's linker-only
+   // and causes errors with -Werror=unused-command-line-argument during compilation
+   HIPLDFLAGS_NO_HIP_RT = HIPLDFLAGS;
+-- 
+2.34.1
+

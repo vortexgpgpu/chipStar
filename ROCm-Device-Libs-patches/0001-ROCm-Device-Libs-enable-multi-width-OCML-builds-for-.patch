@@ -1,0 +1,190 @@
+From a0fe441d7dff0665679eef0710420c6279cb08d6 Mon Sep 17 00:00:00 2001
+From: tinebp <tinebp@yahoo.com>
+Date: Thu, 28 May 2026 00:01:53 -0700
+Subject: [PATCH] ROCm-Device-Libs: enable multi-width OCML builds for chipStar
+
+Phase 2 of chipstar_opencl_32bit_proposal.md: chipStar builds
+OCML twice (once per SPIR-V pointer width) so a single chipStar
+install can serve both rv32 and rv64 Vortex devices. This requires
+add_subdirectory(ROCm-Device-Libs) to be invokable multiple times
+without target-name collisions.
+
+Three patches:
+
+- cmake/OCL.cmake (opencl_bc_lib macro): suffix CMake target names
+  by AMD_DEVICE_LIBS_TARGET_SUFFIX (parent-scope variable, defaults
+  to empty for the standalone-build case). Output .bc filenames are
+  unchanged.
+
+- irif/CMakeLists.txt: same target-name suffixing; widen the
+  TARGET_TRIPLE regex from `spirv64.*` to `spirv(32|64).*` so
+  irif builds for spirv32 too (was a fatal_error otherwise).
+
+- CMakeLists.txt: guard add_subdirectory(utils/prepare-builtins)
+  (host-side tool, single instance) and add_subdirectory(test/
+  constant_folding) (add_test names collide on re-entry) against
+  multi-scope invocation.
+
+Single-width builds are byte-identical to before -- the suffix
+defaults to empty and the new guards no-op on first entry.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ CMakeLists.txt      | 18 +++++++++++++++---
+ cmake/OCL.cmake     | 26 +++++++++++++++++---------
+ irif/CMakeLists.txt | 13 +++++++++----
+ 3 files changed, 41 insertions(+), 16 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2c23366..0fc7a2f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -51,8 +51,13 @@ if (NOT DEFINED AMDGPU_TARGET_TRIPLE)
+   set(AMDGPU_TARGET_TRIPLE "amdgcn--amdhsa")
+ endif()
+ 
++# Guard against re-entry: chipStar pulls this subdirectory in once per
++# target pointer width, but prepare-builtins is a host-side tool that
++# must only be defined once.
+ if (NOT PREPARE_BUILTINS)
+-  add_subdirectory(utils/prepare-builtins)
++  if (NOT TARGET prepare-builtins)
++    add_subdirectory(utils/prepare-builtins)
++  endif()
+   set (PREPARE_BUILTINS $<TARGET_FILE:prepare-builtins>)
+ endif()
+ 
+@@ -68,8 +73,15 @@ add_subdirectory(opencl)
+ add_subdirectory(hip)
+ add_subdirectory(asanrtl)
+ 
+-enable_testing()
+-add_subdirectory(test/constant_folding)
++# Guard against re-entry when chipStar pulls this subdirectory in once
++# per target pointer width (see chipStar bitcode/CMakeLists.txt). The
++# constant-folding test registers add_test(constant_fold_lgamma_r),
++# which collides on a second invocation.
++if (NOT _ROCM_DEVICELIB_TESTS_ADDED)
++  enable_testing()
++  add_subdirectory(test/constant_folding)
++  set(_ROCM_DEVICELIB_TESTS_ADDED TRUE CACHE INTERNAL "")
++endif()
+ 
+ include(Packages)
+ 
+diff --git a/cmake/OCL.cmake b/cmake/OCL.cmake
+index ad5097c..880470b 100644
+--- a/cmake/OCL.cmake
++++ b/cmake/OCL.cmake
+@@ -64,6 +64,13 @@ endmacro()
+ # called with NAME: library name
+ #             SOURCES: .cl and .ll source files
+ #             INTERNAL_LINK_LIBS: Extra .lls to be linked and internalized into final library
++#
++# AMD_DEVICE_LIBS_TARGET_SUFFIX (parent-scope variable, optional):
++#   when set, suffixes the CMake target name (but not the output .bc
++#   basename) so the macro can be invoked from multiple
++#   add_subdirectory() scopes without target-name collisions. Used by
++#   chipStar to build OCML at multiple SPIR-V pointer widths in a
++#   single configuration.
+ macro(opencl_bc_lib)
+   set(parse_options)
+   set(one_value_args NAME)
+@@ -73,10 +80,11 @@ macro(opencl_bc_lib)
+                                       "${multi_value_args}" ${ARGN})
+ 
+   set(name ${OPENCL_BC_LIB_NAME})
++  set(target_name "${name}${AMD_DEVICE_LIBS_TARGET_SUFFIX}")
+   set(sources ${OPENCL_BC_LIB_SOURCES})
+   set(internal_link_libs ${OPENCL_BC_LIB_INTERNAL_LINK_LIBS})
+ 
+-  get_target_property(irif_lib_output irif OUTPUT_NAME)
++  get_target_property(irif_lib_output "irif${AMD_DEVICE_LIBS_TARGET_SUFFIX}" OUTPUT_NAME)
+ 
+   # Mirror the install layout structure.
+   set(OUTPUT_DIR ${PROJECT_BINARY_DIR}/${INSTALL_ROOT_SUFFIX})
+@@ -87,10 +95,10 @@ macro(opencl_bc_lib)
+ 
+   set(clean_files)
+ 
+-  list(APPEND AMDGCN_LIB_LIST ${name})
++  list(APPEND AMDGCN_LIB_LIST ${target_name})
+   set(AMDGCN_LIB_LIST ${AMDGCN_LIB_LIST} PARENT_SCOPE)
+ 
+-  list(APPEND AMDGCN_DEP_LIST ${name})
++  list(APPEND AMDGCN_DEP_LIST ${target_name})
+   set(AMDGCN_DEP_LIST ${AMDGCN_DEP_LIST} PARENT_SCOPE)
+ 
+   set_inc_options()
+@@ -143,10 +151,10 @@ macro(opencl_bc_lib)
+       -o ${OUTPUT_BC_LIB} "${OUT_NAME}${STRIP_SUFFIX}"
+       DEPENDS "${deps}" "${CMAKE_CURRENT_BINARY_DIR}/${OUT_NAME}_response" "${PREPARE_BUILTINS}" ${internal_link_libs})
+ 
+-  add_custom_target("${name}" ALL
++  add_custom_target("${target_name}" ALL
+     DEPENDS "${OUTPUT_DIR}/${OUT_NAME}${FINAL_SUFFIX}"
+     SOURCES ${OPENCL_BC_LIB_SOURCES})
+-  set_target_properties(${name} PROPERTIES
++  set_target_properties(${target_name} PROPERTIES
+     OUTPUT_NAME "${OUTPUT_DIR}/${OUT_NAME}${FINAL_SUFFIX}"
+     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+     ARCHIVE_OUTPUT_NAME "${name}"
+@@ -155,16 +163,16 @@ macro(opencl_bc_lib)
+   list(APPEND clean_files
+     "${OUT_NAME}${LIB_SUFFIX}" "${OUT_NAME}${STRIP_SUFFIX}")
+ 
+-  set_property(GLOBAL APPEND PROPERTY AMD_DEVICE_LIBS ${name})
++  set_property(GLOBAL APPEND PROPERTY AMD_DEVICE_LIBS ${target_name})
+ 
+   if(NOT ROCM_DEVICELIB_STANDALONE_BUILD)
+-    add_dependencies("${name}" llvm-link clang opt llvm-objdump)
++    add_dependencies("${target_name}" llvm-link clang opt llvm-objdump)
+   endif()
+ 
+   if (TARGET prepare-builtins)
+-    add_dependencies("${name}" prepare-builtins)
++    add_dependencies("${target_name}" prepare-builtins)
+   endif()
+-  add_dependencies("${name}" irif)
++  add_dependencies("${target_name}" "irif${AMD_DEVICE_LIBS_TARGET_SUFFIX}")
+ 
+   set_directory_properties(PROPERTIES
+     ADDITIONAL_MAKE_CLEAN_FILES "${clean_files}")
+diff --git a/irif/CMakeLists.txt b/irif/CMakeLists.txt
+index 73ba6a6..686efce 100644
+--- a/irif/CMakeLists.txt
++++ b/irif/CMakeLists.txt
+@@ -21,7 +21,7 @@ set(irif_lib_file ${CMAKE_CURRENT_BINARY_DIR}/irif.bc)
+ set(TARGET_TRIPLE ${AMDGPU_TARGET_TRIPLE})
+ if(TARGET_TRIPLE MATCHES "amdgcn.*")
+   set(TARGET_DATALAYOUT "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5")
+-elseif(TARGET_TRIPLE MATCHES "spirv64.*")
++elseif(TARGET_TRIPLE MATCHES "spirv(32|64).*")
+   execute_process(
+     COMMAND touch empty.c
+     COMMAND ${CLANG_ROOT_PATH_BIN}/clang -target ${AMDGPU_TARGET_TRIPLE}
+@@ -49,13 +49,18 @@ add_custom_command(OUTPUT ${irif_lib_file}
+   COMMAND $<TARGET_FILE:llvm-link> ${sources} -o ${irif_lib_file}
+   DEPENDS ${sources})
+ 
+-add_custom_target(irif DEPENDS ${irif_lib_file}
++# AMD_DEVICE_LIBS_TARGET_SUFFIX (parent-scope variable, optional): when
++# set, suffixes the CMake target name so this CMakeLists can be invoked
++# via add_subdirectory() from multiple scopes (used by chipStar's
++# multi-width SPIR-V devicelib build).
++set(_irif_target "irif${AMD_DEVICE_LIBS_TARGET_SUFFIX}")
++add_custom_target(${_irif_target} DEPENDS ${irif_lib_file}
+                        SOURCES ${sources})
+-set_target_properties(irif PROPERTIES
++set_target_properties(${_irif_target} PROPERTIES
+   OUTPUT_NAME ${irif_lib_file}
+   ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+   ARCHIVE_OUTPUT_NAME "irif")
+ 
+ if(NOT ROCM_DEVICELIB_STANDALONE_BUILD)
+-  add_dependencies(irif llvm-link)
++  add_dependencies(${_irif_target} llvm-link)
+ endif()
+-- 
+2.34.1
+
