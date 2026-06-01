@@ -1,0 +1,42 @@
+diff --git a/src/hipBin_spirv.h b/src/hipBin_spirv.h
+index cc0c9d1..ed86d72 100644
+--- a/src/hipBin_spirv.h
++++ b/src/hipBin_spirv.h
+@@ -655,6 +655,37 @@ bool HipBinSpirv::detectPlatform() {
+     }
+   }
+ 
++  // Make the install-time paths baked into .hipInfo relocatable.
++  //
++  // .hipInfo records HIP_PATH and embeds it (the build-time
++  // CMAKE_INSTALL_PREFIX) inside HIP_OFFLOAD_{COMPILE,LINK,RDC}_OPTIONS as
++  // absolute paths (--hip-path=<prefix>, -include <prefix>/include/hip/
++  // spirv_fixups.h, -L<prefix>/lib, -Wl,-rpath,<prefix>/lib). A prebuilt
++  // chipStar unpacked to a different location (CI runner, a non-default
++  // TOOLDIR, another user's home) would otherwise emit those stale paths and
++  // fail. Rewrite the baked prefix to where hipcc actually lives now — the
++  // same source getHipPath()/constructHipPath() uses: HIP_PATH env if set,
++  // else the parent of this binary's directory. In-place installs are a
++  // no-op (real == baked).
++  if (detected && !hipInfo_.hipPath.empty()) {
++    const string realPrefix = var.hipPathEnv_.empty()
++        ? currentBinaryPath.parent_path().string()
++        : var.hipPathEnv_;
++    const string &bakedPrefix = hipInfo_.hipPath;
++    if (!realPrefix.empty() && realPrefix != bakedPrefix) {
++      auto relocate = [&bakedPrefix, &realPrefix](string &flags) {
++        for (size_t pos = 0;
++             (pos = flags.find(bakedPrefix, pos)) != string::npos;
++             pos += realPrefix.size())
++          flags.replace(pos, bakedPrefix.size(), realPrefix);
++      };
++      relocate(hipInfo_.cxxflags);
++      relocate(hipInfo_.ldflags);
++      relocate(hipInfo_.rdcSupplementLinkFlags);
++      hipInfo_.hipPath = realPrefix;
++    }
++  }
++
+   // Because our compiler path gets read from hipInfo, we need to do this here
+   constructCompilerPath();
+   return detected;

@@ -8,6 +8,7 @@ applied to a clean upstream submodule before chipStar's build.
 ```
 HIPCC-patches/
 ├── 0001-hipcc-accept-offload-spirv32-offload-pointer-width-3.patch
+├── 0002-hipcc-relocatable-install-paths.patch
 └── README.md
 ```
 
@@ -38,3 +39,22 @@ git apply ../HIPCC-patches/*.patch
   LLVM 23+). Required by
   [docs/proposals/chipstar_opencl_32bit_proposal.md](https://github.com/vortexgpgpu/vortex/blob/tinebp-patch-2/docs/proposals/chipstar_opencl_32bit_proposal.md)
   §5.4.
+
+- **0002 — relocatable install paths.** Makes a prebuilt chipStar work
+  from any extraction path instead of only the build-time
+  `CMAKE_INSTALL_PREFIX`. `.hipInfo` records `HIP_PATH` and embeds that
+  absolute prefix inside `HIP_OFFLOAD_{COMPILE,LINK,RDC}_OPTIONS`
+  (`--hip-path=<prefix>`, `-include <prefix>/include/hip/spirv_fixups.h`,
+  `-L<prefix>/lib`, `-Wl,-rpath,<prefix>/lib`). `getHipPath()` already
+  self-locates (`/proc/self/exe` → parent, or `HIP_PATH` env), but those
+  embedded flags were emitted verbatim — so a tarball unpacked anywhere
+  but the original prefix (CI `/home/runner/...`, a non-default
+  `TOOLDIR`, another user's home) emitted stale paths and failed. In
+  `HipBinSpirv::detectPlatform()`, after `.hipInfo` is parsed, the baked
+  prefix (`hipInfo_.hipPath`) is rewritten to the self-located/env prefix
+  across the offload flag strings. In-place installs are a no-op
+  (real == baked). The external LLVM/clang path (`HIP_CLANG_PATH`, a
+  sibling toolchain component, not under the chipStar prefix) is not
+  self-locatable and is supplied by the consumer via the standard
+  `HIP_CLANG_PATH` env var (Vortex sets it from `$(LLVM_PATH)` in
+  `tests/hip/common.mk`).
